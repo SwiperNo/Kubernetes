@@ -1,0 +1,145 @@
+
+# Installing Kubernetes depedency packages
+- name: Installing Docker…
+  become: yes
+  apt:
+    name: docker.io
+    state: present
+    update_cache: true
+
+- name: Enabling Docker…
+  become: yes
+  service:
+    name: docker
+    enabled: yes
+
+- name: Installing APT Transport HTTPS…
+  become: yes
+  apt:
+    name: apt-transport-https
+    state: present
+
+- name: Adding kubernetes apt-key…
+  become: yes
+  apt_key:
+    url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+    state: present
+
+- name: Adding kubernetes APT repository…
+  become: yes
+  apt_repository:
+    repo: deb http://apt.kubernetes.io/ kubernetes-xenial main
+    state: present
+    filename: ‘kubernetes’
+
+- name: Installing kubelet…
+  become: yes
+  apt:
+    name: kubelet
+    state: present
+    update_cache: true
+
+- name: Installing kubeadm…
+  become: yes
+  apt:
+    name: kubeadm
+    state: present
+    update_cache: true
+
+ ##########################
+ #Disable swap
+- name: Disabling swap on hosts…
+  become: yes
+  shell: swapoff -a
+
+- name: Disabling swap from fstab…
+  become: yes
+  replace:
+    path: /etc/fstab
+    regexp: ‘^([^#].*?\sswap\s+sw\s+.*)$’
+    replace: ‘# \1’
+
+
+ ##############################
+ ##Configuring networks
+
+- name: Creating kubernetes config file for host network…
+  become: yes
+  shell:
+    cmd: |
+    cat <<__EOF__ > /etc/sysctl.d/k8s.conf
+    net.bridge.bridge-nf-call-ip6tables=1
+    net.bridge.bridge-nf-call-iptables=1
+    __EOF__
+    args:
+    chdir: /etc/sysctl.d
+    creates: k8s.conf
+
+- name: Applying sysctl file config…
+  become: yes
+  shell: sysctl --system
+
+- name: Applying newly created kubernetes config file…
+  become: yes
+  shell: sysctl -p /etc/sysctl.d/k8s.conf
+
+- name: Deploying docker iptables rule…
+  become: yes
+  shell: iptables -P FORWARD ACCEPT
+  
+- name: Disabling UFW…
+  become: yes
+  ufw:
+    state: disabled
+
+
+###############################
+#Install kubectl
+- name: Installing kubectl on master node..
+  become: yes
+  apt:
+    name: kubectl
+    state: present
+    update_cache: yes
+    force: yes
+
+ #################################
+ #Deploying Kubernetes Cluster
+
+- name: Initializing the kubernetes cluster on the master node…
+  become: yes
+  shell: kubeadm init --pod-network-cidr=10.244.0.0/16
+
+- name: Creating .kube directory
+  file:
+    path: $HOME/.kube
+    state: directory
+    mode: 0755
+ 
+- name: Configuring users cluster access
+  become: yes
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ansible/.kube/config
+    remote_src: yes
+    owner: ansible
+ 
+- name: Installing Pod network…. (Flannel)
+  shell: kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+###############################
+# Join command from Master
+- name: Getting join command from the master node…
+  shell: kubeadm token create --print-join-command
+  register: join_command
+ 
+- name: Setting join command…
+  set_fact:
+  join_command: “{{ join_command.stdout_lines[0] }}”
+
+ ################################
+  #joining to the cluster
+- name: Joining to the cluster
+  become: yes
+  shell: “{{ hostvars[‘kubemaster’][‘join_command’] }}”
+
